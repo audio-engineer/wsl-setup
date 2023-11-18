@@ -1,0 +1,209 @@
+#!/usr/bin/env sh
+
+# Set a sane environment
+set -eu
+
+# Redirect stdout to 3, redirect stdout to /dev/null and stderr to error.log
+exec 3>&1 1>/dev/null 2>./error.log
+
+# Set variables
+color_reset='\033[0m'
+color_green='\033[32m'
+color_blue='\033[34m'
+to_be_installed_one='software-properties-common libssl-dev git gdb pkg-config keychain zsh ninja-build'
+to_be_installed_two='kitware-archive-keyring cmake=3.26.4-0kitware1ubuntu22.04.1
+ cmake-data=3.26.4-0kitware1ubuntu22.04.1 zsh-autosuggestions zsh-completions zsh-syntax-highlighting'
+
+update_and_upgrade() {
+  printf '%bUpdating and upgrading%b\n' "${color_green}" "${color_reset}" >&3
+
+  sudo apt-get update
+  sudo apt-get upgrade -y
+}
+
+check_and_install() {
+  printf '%bChecking and installing required software%b\n' "$color_green" "$color_reset" >&3
+
+  packages="$1"
+
+  set --
+  for package in $packages; do
+    if ! dpkg -s "$package"; then
+      set -- "$@" "$package"
+    fi
+  done
+
+  if [ -z "$*" ]; then
+    printf '%bNo packages to install%b\n' "$color_green" "$color_reset" >&3
+
+    return
+  fi
+
+  printf '%bThe following packages will be installed:%b %b%s%b\n' "$color_green" "$color_reset" "$color_blue" "$*" \
+    "$color_reset" >&3
+  printf '%bInstalling the packages%b\n' "$color_green" "$color_reset" >&3
+
+  sudo apt-get install -y "$@"
+}
+
+# Update and upgrade
+update_and_upgrade
+
+# Check and install required software
+check_and_install "$to_be_installed_one"
+
+# Install Clang and related software
+printf '%bChecking whether Clang and related software should be installed%b\n' "$color_green" "$color_reset" >&3
+if ! command -v clang-17 >/dev/null 2>&1; then
+  printf '%bInstalling Clang and related software%b\n' "$color_green" "$color_reset" >&3
+  wget -qO - https://apt.llvm.org/llvm.sh | sudo bash -s all
+else
+  printf '%bClang and related software are already installed%b\n' "$color_green" "$color_reset" >&3
+fi
+
+# Add repositories and respective keys to APT
+printf '%bAdding repositories and keys to APT%b\n' "$color_green" "$color_reset" >&3
+
+## Git (See https://git-scm.com/download/linux)
+if ! apt-cache policy | grep -q 'git'; then
+  sudo add-apt-repository -y ppa:git-core/ppa
+fi
+
+## CMake (See https://apt.kitware.com/)
+if ! apt-cache policy | grep -q 'kitware'; then
+  echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ jammy main' |
+    sudo tee /etc/apt/sources.list.d/kitware.list >/dev/null
+  wget -qO - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null |
+    gpg --dearmor - |
+    sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
+fi
+
+## zsh-autosuggestions (See https://software.opensuse.org/download.html?project=shells%3Azsh-users%3Azsh-autosuggestions&package=zsh-autosuggestions)
+if ! apt-cache policy | grep -q 'zsh-autosuggestions'; then
+  echo 'deb http://download.opensuse.org/repositories/shells:/zsh-users:/zsh-autosuggestions/xUbuntu_22.04/ /' |
+    sudo tee /etc/apt/sources.list.d/shells:zsh-users:zsh-autosuggestions.list >/dev/null
+  wget -qO - https://download.opensuse.org/repositories/shells:zsh-users:zsh-autosuggestions/xUbuntu_22.04/Release.key |
+    gpg --dearmor - |
+    sudo tee /etc/apt/trusted.gpg.d/shells_zsh-users_zsh-autosuggestions.gpg >/dev/null
+fi
+
+## zsh-completions (See https://software.opensuse.org/download.html?project=shells%3Azsh-users%3Azsh-completions&package=zsh-completions)
+if ! apt-cache policy | grep -q 'zsh-completions'; then
+  echo 'deb http://download.opensuse.org/repositories/shells:/zsh-users:/zsh-completions/xUbuntu_22.04/ /' |
+    sudo tee /etc/apt/sources.list.d/shells:zsh-users:zsh-completions.list >/dev/null
+  wget -qO - https://download.opensuse.org/repositories/shells:zsh-users:zsh-completions/xUbuntu_22.04/Release.key |
+    gpg --dearmor - |
+    sudo tee /etc/apt/trusted.gpg.d/shells_zsh-users_zsh-completions.gpg >/dev/null
+fi
+
+## zsh-syntax-highlighting (See https://software.opensuse.org/download.html?project=shells%3Azsh-users%3Azsh-syntax-highlighting&package=zsh-syntax-highlighting)
+if ! apt-cache policy | grep -q 'zsh-syntax-highlighting'; then
+  echo 'deb http://download.opensuse.org/repositories/shells:/zsh-users:/zsh-syntax-highlighting/xUbuntu_22.04/ /' |
+    sudo tee /etc/apt/sources.list.d/shells:zsh-users:zsh-syntax-highlighting.list >/dev/null
+  wget -qO - \
+    https://download.opensuse.org/repositories/shells:zsh-users:zsh-syntax-highlighting/xUbuntu_22.04/Release.key |
+    gpg --dearmor - |
+    sudo tee /etc/apt/trusted.gpg.d/shells_zsh-users_zsh-syntax-highlighting.gpg >/dev/null
+fi
+
+# Update and upgrade again
+update_and_upgrade
+
+# Remove CMake key (See https://apt.kitware.com/)
+sudo rm -f /usr/share/keyrings/kitware-archive-keyring.gpg
+
+# Install second batch of software
+check_and_install "$to_be_installed_two"
+
+# Prevent CMake from upgrading
+printf '%bPreventing CMake from being upgraded accidentally%b\n' "$color_green" "$color_reset" >&3
+sudo apt-mark hold cmake
+
+# Do some cleanup
+printf '%bDoing cleanup%b\n' "$color_green" "$color_reset" >&3
+sudo apt-get autoremove -y
+sudo apt autoclean -y
+sudo apt clean -y
+
+# Install and configure Oh My Zsh
+printf '%bInstalling and configuring Oh My Zsh%b\n' "$color_green" "$color_reset" >&3
+yes | RUNZSH=no sh -c "$(wget -qO - https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+mkdir -p ~/.oh-my-zsh/custom/plugins/zsh-autosuggestions/
+echo '[[ -f /usr/share/zsh-autosuggestions/zsh-autosuggestions.plugin.zsh ]] &&
+        source /usr/share/zsh-autosuggestions/zsh-autosuggestions.plugin.zsh' \
+  >~/.oh-my-zsh/custom/plugins/zsh-autosuggestions/zsh-autosuggestions.plugin.zsh
+mkdir -p ~/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting/
+echo '[[ -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.plugin.zsh ]] &&
+        source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.plugin.zsh' \
+  >~/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.plugin.zsh
+sudo chsh -s /bin/zsh "$(whoami)"
+
+# Configure Keychain
+# shellcheck disable=SC2016
+printf '\neval $(keychain --eval --agents ssh id_ed25519)\n' >>~/.zshrc
+
+# Show user prompts
+printf '%bUser prompts%b\n' "$color_green" "$color_reset" >&3
+printf '%bEnter your full name:%b\n' "$color_green" "$color_reset" >&3
+read -r name
+printf '%bEnter the email address you use on GitHub:%b\n' "$color_green" "$color_reset" >&3
+read -r email
+printf '%bEnter a password for the SSH key:%b\n' "$color_green" "$color_reset" >&3
+stty -echo
+read -r password
+stty echo
+
+# Git configuration
+printf '%bConfiguring Git%b\n' "$color_green" "$color_reset" >&3
+git config --global user.name "$name"
+git config --global user.email "$email"
+git config --global init.defaultBranch main
+
+# SSH key setup
+printf '%bCreating an SSH key for GitHub%b\n' "$color_green" "$color_reset" >&3
+## (https://docs.github.com/en/authentication/connecting-to-github-with-ssh/generating-a-new-ssh-key-and-adding-it-to-the-ssh-agent?platform=linux)
+ssh-keygen -t ed25519 -qN "$password" -f ~/.ssh/id_ed25519 -C "$email" >&3
+eval "$(ssh-agent -s)"
+printf '%bEnter the password you just set:%b\n' "$color_green" "$color_reset" >&3
+ssh-add ~/.ssh/id_ed25519
+
+# Show helpful information
+printf '%bInstallation complete. Helpful information:%b\n' "$color_green" "$color_reset" >&3
+printf '%bZSH VERSION:%b\n' "$color_green" "$color_reset" >&3
+zsh --version >&3
+printf '%bGIT VERSION:%b\n' "$color_green" "$color_reset" >&3
+git --version >&3
+printf '%bPKG-CONFIG VERSION:%b\n' "$color_green" "$color_reset" >&3
+pkg-config --version >&3
+printf '%bCMAKE VERSION:%b\n' "$color_green" "$color_reset" >&3
+cmake --version >&3
+printf '%bCLANG VERSION:%b\n' "$color_green" "$color_reset" >&3
+clang-17 --version >&3
+printf '%bLLDB VERSION:%b\n' "$color_green" "$color_reset" >&3
+lldb-17 --version >&3
+printf '%bCLANG-FORMAT VERSION:%b\n' "$color_green" "$color_reset" >&3
+clang-format-17 --version >&3
+printf '%bCLANG-TIDY VERSION:%b\n' "$color_green" "$color_reset" >&3
+clang-tidy-17 --version >&3
+printf '%bGDB VERSION:%b\n' "$color_green" "$color_reset" >&3
+gdb --version >&3
+printf '%bGIT CONFIG:%b\n' "$color_green" "$color_reset" >&3
+git config --global --list >&3
+printf '%bKEYCHAIN VERSION:%b\n' "$color_green" "$color_reset" >&3
+keychain --version >&3
+printf '%bCopy the following SSH key to your GitHub account settings:%b\n' "$color_green" "$color_reset" >&3
+printf '%b%s%b\n' "$color_blue" "$(cat ~/.ssh/id_ed25519.pub)" "$color_reset" >&3
+printf '%bNow test your connection by running%b%b ssh -T git@github.com%b\n' "$color_green" "$color_reset" \
+  "$color_blue" "$color_reset" >&3
+printf '%bCopy the following CLion toolchain configuration paths to CLion | Settings | Build, Execution, Deployment |
+ Toolchains | WSL:%b\n' "$color_green" "$color_reset" >&3
+printf '%bCMake:%b %b%s%b\n' "$color_green" "$color_reset" "$color_blue" "$(which cmake)" "$color_reset" >&3
+printf '%bBuild Tool:%b %b%s%b\n' "$color_green" "$color_reset" "$color_blue" "$(which ninja)" "$color_reset" >&3
+printf '%bC Compiler:%b %b%s%b\n' "$color_green" "$color_reset" "$color_blue" "$(which clang-17)" "$color_reset" >&3
+printf '%bC++ Compiler:%b %b%s%b\n' "$color_green" "$color_reset" "$color_blue" "$(which clang++-17)" "$color_reset" >&3
+printf '%bDebugger:%b %b%s%b\n' "$color_green" "$color_reset" "$color_blue" "$(which gdb)" "$color_reset" >&3
+printf '%bWhen you are ready, run%b %b/bin/zsh%b %bto log into Z Shell and enter your SSH key password again.
+ Then, run%b%b omz plugin enable zsh-autosuggestions zsh-syntax-highlighting%b %bto enable the installed Oh My Zsh
+ plugins.%b\n' \
+  "$color_green" "$color_reset" "$color_blue" "$color_reset" "$color_green" "$color_reset" "$color_blue" \
+  "$color_reset" "$color_green" "$color_reset" >&3
